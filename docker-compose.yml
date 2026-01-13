@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  agent1:
+    build: .
+    container_name: agent-messenger-1
+    environment:
+      - AGENT_UUID=agent-001-aaaa-bbbb-cccc-ddddeeee
+    command: ["agent-messenger", "--uuid", "agent-001-aaaa-bbbb-cccc-ddddeeee", "listen"]
+    # Use default bridge network - multicast works within Docker network
+
+  agent2:
+    build: .
+    container_name: agent-messenger-2
+    environment:
+      - AGENT_UUID=agent-002-aaaa-bbbb-cccc-ddddeeee
+    command: ["agent-messenger", "--uuid", "agent-002-aaaa-bbbb-cccc-ddddeeee", "listen"]
+
+  # Example: agent that sends a test message
+  sender:
+    build: .
+    container_name: agent-messenger-sender
+    depends_on:
+      - agent1
+      - agent2
+    command: >
+      sh -c "sleep 2 && agent-messenger send 'Hello from sender container!'"
+    profiles:
+      - test
+
+# To run agents: docker-compose up
+# To test with sender: docker-compose --profile test up
+# To communicate from host to containers, use --network=host on the host CLI
