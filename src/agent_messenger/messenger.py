@@ -19,6 +19,7 @@ from .network import (
     send_multicast,
     receive_multicast,
 )
+from .file_transport import FileTransport
 
 
 # Peer discovery settings
@@ -46,14 +47,16 @@ class AgentMessenger:
         messenger.stop()
     """
 
-    def __init__(self, uuid: Optional[str] = None):
+    def __init__(self, uuid: Optional[str] = None, file_dir: Optional[str] = None):
         """
         Initialize the messenger.
 
         Args:
             uuid: Agent UUID (auto-generated if not provided)
+            file_dir: Directory for file-based IPC (enables file transport mode)
         """
         self.uuid = uuid or generate_uuid()
+        self.file_dir = file_dir
         self._handlers: List[MessageHandler] = []
         self._peers: Dict[str, float] = {}  # uuid -> last_seen_timestamp
         self._peers_lock = threading.Lock()
@@ -62,6 +65,7 @@ class AgentMessenger:
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._receiver_socket = None
         self._sender_socket = None
+        self._file_transport: Optional[FileTransport] = None
 
     def on_message(self, handler: MessageHandler) -> MessageHandler:
         """
@@ -96,16 +100,29 @@ class AgentMessenger:
             return
 
         self._running = True
-        self._receiver_socket = create_receiver_socket(timeout=1.0)
-        self._sender_socket = create_sender_socket()
 
-        # Start listener thread
-        self._listener_thread = threading.Thread(
-            target=self._listen_loop,
-            daemon=True,
-            name=f"AgentMessenger-Listener-{self.uuid[:8]}",
-        )
-        self._listener_thread.start()
+        # Initialize file transport if file_dir specified
+        if self.file_dir:
+            self._file_transport = FileTransport(self.file_dir, self.uuid)
+            self._file_transport.add_handler(self._handle_message)
+            self._file_transport.start()
+
+        # Always try multicast too (dual-mode when file_dir is set)
+        try:
+            self._receiver_socket = create_receiver_socket(timeout=1.0)
+            self._sender_socket = create_sender_socket()
+
+            # Start listener thread
+            self._listener_thread = threading.Thread(
+                target=self._listen_loop,
+                daemon=True,
+                name=f"AgentMessenger-Listener-{self.uuid[:8]}",
+            )
+            self._listener_thread.start()
+        except Exception as e:
+            if not self.file_dir:
+                raise  # Re-raise if no file fallback
+            print(f"Multicast unavailable ({e}), using file transport only")
 
         # Start heartbeat thread
         self._heartbeat_thread = threading.Thread(
@@ -138,6 +155,10 @@ class AgentMessenger:
             self._sender_socket.close()
             self._sender_socket = None
 
+        if self._file_transport:
+            self._file_transport.stop()
+            self._file_transport = None
+
     def send(self, text: str) -> None:
         """
         Send a text message to all peers.
@@ -145,12 +166,19 @@ class AgentMessenger:
         Args:
             text: Message text to send
         """
-        if not self._sender_socket:
+        if not self._sender_socket and not self._file_transport:
             raise RuntimeError("Messenger not started. Call start() first.")
 
         message = create_message(self.uuid, text)
-        data = encode(message)
-        send_multicast(self._sender_socket, data)
+
+        # Send via multicast if available
+        if self._sender_socket:
+            data = encode(message)
+            send_multicast(self._sender_socket, data)
+
+        # Also send via file transport if enabled
+        if self._file_transport:
+            self._file_transport.send(message)
 
     def get_peers(self) -> Dict[str, float]:
         """
@@ -160,13 +188,23 @@ class AgentMessenger:
             Dict mapping peer UUIDs to last-seen timestamps
         """
         now = time.time()
+        peers = {}
+
+        # Get multicast peers
         with self._peers_lock:
-            # Return only peers seen within timeout
-            return {
-                uuid: last_seen
-                for uuid, last_seen in self._peers.items()
-                if now - last_seen < PEER_TIMEOUT
-            }
+            for uuid, last_seen in self._peers.items():
+                if now - last_seen < PEER_TIMEOUT:
+                    peers[uuid] = last_seen
+
+        # Merge file transport peers
+        if self._file_transport:
+            file_peers = self._file_transport.get_peers()
+            for uuid, last_seen in file_peers.items():
+                # Keep most recent timestamp
+                if uuid not in peers or last_seen > peers[uuid]:
+                    peers[uuid] = last_seen
+
+        return peers
 
     def get_active_peer_count(self) -> int:
         """Get the number of currently active peers."""
@@ -201,13 +239,19 @@ class AgentMessenger:
 
     def _send_heartbeat(self) -> None:
         """Send a heartbeat message."""
+        heartbeat = create_heartbeat(self.uuid)
+
+        # Send via multicast
         if self._sender_socket:
-            heartbeat = create_heartbeat(self.uuid)
             data = encode(heartbeat)
             try:
                 send_multicast(self._sender_socket, data)
             except Exception:
                 pass  # Ignore send errors for heartbeats
+
+        # Send via file transport
+        if self._file_transport:
+            self._file_transport.send_heartbeat(heartbeat)
 
     def _handle_message(self, message: Message) -> None:
         """Process an incoming message."""

@@ -17,7 +17,7 @@ def format_timestamp(ts: float) -> str:
 
 def cmd_send(args: argparse.Namespace) -> None:
     """Send a message and exit."""
-    messenger = AgentMessenger(uuid=args.uuid)
+    messenger = AgentMessenger(uuid=args.uuid, file_dir=args.file_dir)
     messenger.start()
     time.sleep(0.1)  # Brief delay to ensure socket is ready
     messenger.send(args.message)
@@ -28,7 +28,7 @@ def cmd_send(args: argparse.Namespace) -> None:
 
 def cmd_listen(args: argparse.Namespace) -> None:
     """Listen for messages until Ctrl+C."""
-    messenger = AgentMessenger(uuid=args.uuid)
+    messenger = AgentMessenger(uuid=args.uuid, file_dir=args.file_dir)
 
     @messenger.on_message
     def handle(uuid: str, text: str):
@@ -53,7 +53,7 @@ def cmd_listen(args: argparse.Namespace) -> None:
 
 def cmd_peers(args: argparse.Namespace) -> None:
     """List active peers on the network."""
-    messenger = AgentMessenger(uuid=args.uuid)
+    messenger = AgentMessenger(uuid=args.uuid, file_dir=args.file_dir)
     messenger.start()
 
     # Wait to discover peers
@@ -76,7 +76,7 @@ def cmd_peers(args: argparse.Namespace) -> None:
 
 def cmd_interactive(args: argparse.Namespace) -> None:
     """Interactive REPL mode."""
-    messenger = AgentMessenger(uuid=args.uuid)
+    messenger = AgentMessenger(uuid=args.uuid, file_dir=args.file_dir)
 
     @messenger.on_message
     def handle(uuid: str, text: str):
@@ -133,6 +133,11 @@ def main() -> None:
     parser.add_argument(
         "--uuid",
         help="Agent UUID (auto-generated if not provided)",
+        default=None,
+    )
+    parser.add_argument(
+        "--file-dir",
+        help="Directory for file-based IPC (for Docker/cross-network)",
         default=None,
     )
 
